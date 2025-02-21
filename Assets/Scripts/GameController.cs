@@ -7,6 +7,7 @@ using UnityEngine.SceneManagement;
 
 public class GameController : MonoBehaviour
 {
+    // Existing variables
     public Transform lastSpawnedNote;
     private static float noteHeight;
     private static float noteWidth;
@@ -31,8 +32,16 @@ public class GameController : MonoBehaviour
     public ReactiveProperty<bool> ShowGameOverScreen { get; set; }
     public bool PlayerWon { get; set; } = false;
 
+    // New variables for beat detection
+    private float[] audioSamples;
+    private int sampleRate;
+    private int samplesPerBeat;
+    private int nextBeatSample;
+    private bool isBeatDetected;
+
     private void Awake()
     {
+        Debug.Log("GameController: Awake called.");
         Instance = this;
         GameStarted = new ReactiveProperty<bool>();
         GameOver = new ReactiveProperty<bool>();
@@ -42,8 +51,10 @@ public class GameController : MonoBehaviour
 
     void Start()
     {
+        Debug.Log("GameController: Start called.");
         SetDataForNoteGeneration();
-        SpawnNotes();
+        InitializeBeatDetection();
+        StartCoroutine(SpawnNotesOnBeat());
     }
 
     private void Update()
@@ -56,7 +67,9 @@ public class GameController : MonoBehaviour
     {
         if (!GameController.Instance.GameStarted.Value && Input.GetMouseButtonDown(0))
         {
+            Debug.Log("GameController: Game started.");
             GameController.Instance.GameStarted.Value = true;
+            audioSource.Play();
         }
     }
 
@@ -64,13 +77,16 @@ public class GameController : MonoBehaviour
     {
         if (Input.GetMouseButtonDown(0))
         {
+            Debug.Log("GameController: Mouse button clicked.");
             var origin = Camera.main.ScreenToWorldPoint(Input.mousePosition);
             var hit = Physics2D.Raycast(origin, Vector2.zero);
             if (hit)
             {
+                Debug.Log("GameController: Raycast hit an object.");
                 var gameObject = hit.collider.gameObject;
                 if (gameObject.CompareTag("Note"))
                 {
+                    Debug.Log("GameController: Hit object is a Note.");
                     var note = gameObject.GetComponent<Note>();
                     note.Play();
                 }
@@ -78,9 +94,9 @@ public class GameController : MonoBehaviour
         }
     }
 
-
     private void SetDataForNoteGeneration()
     {
+        Debug.Log("GameController: Setting data for note generation.");
         var topRight = new Vector3(Screen.width, Screen.height, 0);
         var topRightWorldPoint = Camera.main.ScreenToWorldPoint(topRight);
         var bottomLeftWorldPoint = Camera.main.ScreenToWorldPoint(Vector3.zero);
@@ -97,81 +113,115 @@ public class GameController : MonoBehaviour
         noteSpawnStartPosX = leftmostPointPivot;
     }
 
-    public void SpawnNotes()
+    private void InitializeBeatDetection()
     {
-        if (lastSpawn) return;
+        Debug.Log("GameController: Initializing beat detection.");
+        audioSamples = new float[audioSource.clip.samples * audioSource.clip.channels];
+        audioSource.clip.GetData(audioSamples, 0);
+        sampleRate = audioSource.clip.frequency;
 
-        var noteSpawnStartPosY = lastSpawnedNote.position.y + noteHeight;
-        Note note = null;
-        var timeTillEnd = audioSource.clip.length - audioSource.time;
-        int notesToSpawn = NotesToSpawn;
-        if (timeTillEnd < NotesToSpawn)
+        // Calculate samplesPerBeat based on BPM
+        float bpm = 120f; // Replace with your audio clip's BPM
+        samplesPerBeat = Mathf.FloorToInt((60f / bpm) * sampleRate);
+
+        nextBeatSample = 0;
+        isBeatDetected = false;
+        Debug.Log($"GameController: Sample rate = {sampleRate}, Samples per beat = {samplesPerBeat}");
+    }
+
+    private IEnumerator SpawnNotesOnBeat()
+    {
+        Debug.Log("GameController: Starting SpawnNotesOnBeat coroutine.");
+        while (true)
         {
-            notesToSpawn = Mathf.CeilToInt(timeTillEnd);
-            lastSpawn = true;
-        }
-        for (int i = 0; i < notesToSpawn; i++)
-        {
-            var randomIndex = GetRandomIndex();
-            for (int j = 0; j < 4; j++)
+            if (audioSource.isPlaying)
             {
-                note = Instantiate(notePrefab, noteContainer.transform);
-                note.transform.localScale = noteLocalScale;
-                note.transform.position = new Vector2(noteSpawnStartPosX + noteWidth * j, noteSpawnStartPosY);
-                note.Visible = (j == randomIndex);
-                if (note.Visible)
+                Debug.Log($"GameController: Audio source is playing = {audioSource.isPlaying}");
+                int currentSample = (int)(audioSource.timeSamples % audioSource.clip.samples);
+                Debug.Log($"GameController: Current sample = {currentSample}, Next beat sample = {nextBeatSample}");
+
+                if (currentSample >= nextBeatSample && !isBeatDetected)
                 {
-                    note.Id = lastNoteId;
-                    lastNoteId++;
+                    Debug.Log("GameController: Beat detected, spawning notes.");
+                    isBeatDetected = true;
+                    SpawnNotes();
+                    nextBeatSample += samplesPerBeat;
+                }
+                else if (currentSample < nextBeatSample - samplesPerBeat / 2)
+                {
+                    isBeatDetected = false;
                 }
             }
-            noteSpawnStartPosY += noteHeight;
-            if (i == NotesToSpawn - 1) lastSpawnedNote = note.transform;
+            yield return null;
         }
+    }
+
+    public void SpawnNotes()
+    {
+        if (lastSpawn)
+        {
+            Debug.Log("GameController: Last spawn reached, skipping note spawn.");
+            return;
+        }
+
+        Debug.Log("GameController: Spawning notes.");
+        var noteSpawnStartPosY = lastSpawnedNote.position.y + noteHeight;
+        Note note = null;
+        var randomIndex = GetRandomIndex();
+        for (int j = 0; j < 4; j++)
+        {
+            note = Instantiate(notePrefab, noteContainer.transform);
+            note.transform.localScale = noteLocalScale;
+            note.transform.position = new Vector2(noteSpawnStartPosX + noteWidth * j, noteSpawnStartPosY);
+            note.Visible = (j == randomIndex);
+            if (note.Visible)
+            {
+                note.Id = lastNoteId;
+                lastNoteId++;
+                Debug.Log($"GameController: Spawned note with ID {note.Id} at index {j}.");
+            }
+        }
+        noteSpawnStartPosY += noteHeight;
+        lastSpawnedNote = note.transform;
     }
 
     private int GetRandomIndex()
     {
+        Debug.Log("GameController: Getting random index.");
         var randomIndex = Random.Range(0, 4);
         while (randomIndex == prevRandomIndex) randomIndex = Random.Range(0, 4);
         prevRandomIndex = randomIndex;
+        Debug.Log($"GameController: Random index = {randomIndex}.");
         return randomIndex;
     }
 
     public void PlaySomeOfSong()
     {
+        Debug.Log("GameController: PlaySomeOfSong called.");
         if (!audioSource.isPlaying && !lastNote)
         {
+            Debug.Log("GameController: Starting audio playback.");
             audioSource.Play();
         }
         if (audioSource.clip.length - audioSource.time <= songSegmentLength)
         {
+            Debug.Log("GameController: Last note reached.");
             lastNote = true;
-        }
-        if (playSongSegmentCoroutine != null) StopCoroutine(playSongSegmentCoroutine);
-        playSongSegmentCoroutine = StartCoroutine(PlaySomeOfSongCoroutine());
-    }
-
-    private IEnumerator PlaySomeOfSongCoroutine()
-    {
-        yield return new WaitForSeconds(songSegmentLength);
-        audioSource.Pause();
-        if (lastNote)
-        {
-            PlayerWon = true;
-            StartCoroutine(EndGame());
         }
     }
 
     public void PlayAgain()
     {
+        Debug.Log("GameController: Restarting game.");
         SceneManager.LoadScene(SceneManager.GetActiveScene().name);
     }
 
     public IEnumerator EndGame()
     {
+        Debug.Log("GameController: Ending game.");
         GameOver.Value = true;
         yield return new WaitForSeconds(1);
         ShowGameOverScreen.Value = true;
+        Debug.Log("GameController: Game over screen shown.");
     }
 }
